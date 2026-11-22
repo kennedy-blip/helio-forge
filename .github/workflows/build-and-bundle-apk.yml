@@ -113,6 +113,37 @@ jobs:
         # :processReleaseResources rejects a missing mipmap.
         run: node scripts/apk-release.mjs
 
+      # Compiling Kotlin is the slowest failure mode to discover; do it against
+      # an empty asset payload first so a type error surfaces in ~30 s instead of
+      # after a full web build. ICONS/resources/manifest are all in the repo.
+      - name: Kotlin compile gate (fail fast)
+        id: kotlin
+        working-directory: android
+        shell: bash
+        run: |
+          mkdir -p app/src/main/assets/public
+          [ -f app/src/main/assets/capacitor.config.json ] || \
+            printf '{"appId":"com.helioforge.solar","appName":"HelioForge","webDir":"build"}' \
+            > app/src/main/assets/capacitor.config.json
+          set +e
+          gradle :app:compileReleaseKotlin --no-daemon --console=plain 2>&1 | tee /tmp/kotlin.log
+          exit ${PIPESTATUS[0]}
+
+      - name: Surface Kotlin failure as annotations
+        if: failure() && steps.kotlin.outcome == 'failure'
+        shell: bash
+        run: |
+          set -uo pipefail
+          sed -e 's/\x1b\[[0-9;]*m//g' /tmp/kotlin.log 2>/dev/null \
+            | grep -E '^e: |^w: |error:|FAILURE:|What went wrong|Execution failed' \
+            | head -12 \
+            | while IFS= read -r line; do
+                safe=${line//'%'/'%25'}
+                safe=${safe//$'\r'/''}
+                echo "::error title=Kotlin::${safe}"
+              done
+          exit 1
+
       - name: Build SvelteKit static bundle
         run: npm run build
         env:
