@@ -6,6 +6,8 @@
     queueSnapshot,
     flushQueue,
     clearVault,
+    cloudHealth,
+    restoreFromCloud,
     saveSiteSnapshot,
     sitesToCsv,
     deleteRow,
@@ -25,6 +27,9 @@
   let queue = $state([]);
   let loading = $state(true);
   let tab = $state('sites');
+  /** @type {any} */
+  let cloud = $state({ ok: false, configured: false, source: 'none', host: '', device: '', error: null });
+  let busy = $state('');
 
   const privileged = $derived(can('polyglot'));
   const sun = $derived(sunNow());
@@ -41,6 +46,18 @@
     loading = false;
   }
 
+  async function probeCloud() {
+    cloud = await cloudHealth();
+  }
+
+  async function doRestore() {
+    busy = 'restore';
+    await restoreFromCloud();
+    await refresh();
+    await probeCloud();
+    busy = '';
+  }
+
   async function runBench() {
     const b = await benchmark();
     toast(
@@ -50,8 +67,11 @@
   }
 
   async function doFlush() {
+    busy = 'flush';
     await flushQueue();
     await refresh();
+    await probeCloud();
+    busy = '';
   }
 
   /** @param {any} row */
@@ -83,7 +103,10 @@
     toast('Raw JSON telemetry exported', 'success');
   }
 
-  onMount(refresh);
+  onMount(async () => {
+    await refresh();
+    await probeCloud();
+  });
 
   const benchmarks = $derived([
     { name: 'NOAA SPA solar position', py: 'solar_position()', js: 'solarPosition()', note: 'Spencer declination + EoT, <0.01° parity' },
@@ -109,6 +132,38 @@
     <div class="row" style="gap:.35rem;">
       <button class="btn ghost tiny" onclick={() => saveSiteSnapshot()}>+ Save current site</button>
       <button class="btn ghost tiny" onclick={() => openModal('inspector')}>{'{ }'} Inspector</button>
+    </div>
+  </section>
+
+  <!-- ========================================================== cloud status -->
+  <section class="glass pad cloud-strip">
+    <div class="cloud-id">
+      <span class="dot" class:live={cloud.ok} class:off={cloud.configured && !cloud.ok} class:none={!cloud.configured}></span>
+      <div class="col">
+        <span class="small bold">
+          {#if !cloud.configured}
+            Cloud sync unconfigured
+          {:else if cloud.ok}
+            Supabase reachable
+          {:else}
+            Cloud unreachable
+          {/if}
+        </span>
+        <span class="tiny-text faint">
+          {#if cloud.configured}
+            {cloud.host}.supabase.co · device {cloud.device} · key from {cloud.source}
+            {#if cloud.error}· {cloud.error}{/if}
+          {:else}
+            Vault stays local until credentials are provided
+          {/if}
+        </span>
+      </div>
+    </div>
+    <div class="row" style="gap:.3rem; flex-wrap:wrap;">
+      <button class="btn ghost tiny" onclick={probeCloud} disabled={busy !== ''}>Ping</button>
+      <button class="btn ghost tiny" onclick={doRestore} disabled={busy !== '' || !cloud.configured}>
+        {busy === 'restore' ? 'Restoring…' : '⤒ Restore from cloud'}
+      </button>
     </div>
   </section>
 
@@ -340,6 +395,36 @@
     gap: 0.4rem;
     padding: 1rem 0;
   }
+
+  .cloud-strip {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.8rem;
+    padding: 0.6rem 0.8rem;
+  }
+
+  .cloud-id {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+
+  .dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    flex: none;
+    background: var(--text-faint);
+    box-shadow: 0 0 0 3px color-mix(in oklab, var(--text-faint) 22%, transparent);
+  }
+
+  .dot.live { background: var(--emerald); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.18); }
+  .dot.off { background: var(--gold); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18); }
+  .dot.none { background: var(--critical, #ef4444); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.16); }
 
   .side { display: grid; gap: 0.8rem; }
 
