@@ -126,7 +126,9 @@ jobs:
           # `cap sync` needs webDir to exist and writes assets/capacitor.plugins.json,
           # which nothing else creates on a clean checkout. A stub build/ satisfies
           # the copy step; the real build replaces it before the second sync.
+          # cap requires webDir to contain an index.html, not merely exist.
           mkdir -p build android/app/src/main/assets/public
+          [ -f build/index.html ] || printf '<!doctype html>\n<title>scaffold</title>\n' > build/index.html
           npx cap sync android 2>&1 | tee /tmp/cap.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
