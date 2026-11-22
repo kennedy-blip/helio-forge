@@ -118,7 +118,24 @@ jobs:
       # before Gradle sees the project. `cap update` regenerates the native
       # scaffolding without needing build/ to exist yet.
       - name: Capacitor native scaffold
-        run: npx cap update android
+        shell: bash
+        run: |
+          set +e
+          npx cap update android 2>&1 | tee /tmp/cap.log
+          status=${PIPESTATUS[0]}
+          if [ "$status" -ne 0 ]; then
+            # cap's own error text is the only useful diagnostic here.
+            grep -vE '^\s*$' /tmp/cap.log | tail -20 | while IFS= read -r line; do
+              safe=${line//'%'/'%25'}
+              echo "::error title=cap update::${safe}"
+            done
+          fi
+          # The Kotlin gate below decides whether we can actually proceed; a
+          # non-zero exit here is only fatal if the scaffolding is still missing.
+          if [ ! -f capacitor-cordova-android-plugins/cordova.variables.gradle ]; then
+            echo "::error title=cap update::native scaffolding still missing"
+            exit 1
+          fi
 
       # Compiling Kotlin is the slowest failure mode to discover; do it here,
       # before the web build, so a type error surfaces in ~30 s rather than after
