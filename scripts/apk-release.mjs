@@ -19,6 +19,7 @@
 
 import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { inflateSync, crc32 } from 'node:zlib';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -59,7 +60,70 @@ await check('manifest launcher icons resolve to real files', () => {
   return `${buckets.length * 3} icon files`;
 });
 
-await check('adaptive icon and its background colour exist', () => {
+await check('every launcher PNG is structurally valid (AAPT2 will reject otherwise)', () => {
+  // AAPT2 reports the unhelpful "AAPT2 process unexpectedly exit" for a PNG
+  // whose IDAT payload is one byte short, so decode the format properly:
+  // chunk CRCs, IHDR dimensions, and raw payload length for the stated depth.
+  const dir = resolve(root, 'android/app/src/main/res');
+  const files = [];
+  for (const bucket of readdirSync(dir)) {
+    if (!bucket.startsWith('mipmap-')) continue;
+    for (const f of readdirSync(resolve(dir, bucket))) {
+      if (f.endsWith('.png')) files.push(resolve(dir, bucket, f));
+    }
+  }
+  assert(files.length === 15, `expected 15 launcher PNGs, found ${files.length}`);
+
+  const bad = [];
+  for (const file of files) {
+    const buf = readFileSync(file);
+    const short = file.slice(file.indexOf('mipmap'));
+    if (buf.subarray(0, 8).toString('hex') !== '89504e470d0a1a0a') {
+      bad.push(`${short}: bad signature`);
+      continue;
+    }
+    let pos = 8;
+    let ihdr = null;
+    const idat = [];
+    let crcFail = false;
+    while (pos < buf.length) {
+      const len = buf.readUInt32BE(pos);
+      const tag = buf.subarray(pos + 4, pos + 8);
+      const data = buf.subarray(pos + 8, pos + 8 + len);
+      const want = buf.readUInt32BE(pos + 8 + len);
+      if (crc32(Buffer.concat([tag, data])) !== want) crcFail = true;
+      if (tag.toString() === 'IHDR') {
+        ihdr = { w: data.readUInt32BE(0), h: data.readUInt32BE(4), depth: data[8], color: data[9], interlace: data[12] };
+      } else if (tag.toString() === 'IDAT') {
+        idat.push(data);
+      }
+      pos += 12 + len;
+    }
+    if (crcFail) { bad.push(`${short}: chunk CRC mismatch`); continue; }
+    if (!ihdr || ihdr.interlace !== 0) { bad.push(`${short}: missing or interlaced IHDR`); continue; }
+    const bpp = { 2: 3, 6: 4 }[ihdr.color];
+    if (!bpp || ihdr.depth !== 8) { bad.push(`${short}: unexpected depth/color ${ihdr.depth}/${ihdr.color}`); continue; }
+    let raw;
+    try {
+      raw = inflateSync(Buffer.concat(idat));
+    } catch {
+      bad.push(`${short}: IDAT does not inflate`);
+      continue;
+    }
+    const expected = (ihdr.w * bpp + 1) * ihdr.h;
+    if (raw.length !== expected) {
+      bad.push(`${short}: ${raw.length} bytes, expected ${expected} (one filter byte per row)`);
+      continue;
+    }
+    for (let y = 0; y < ihdr.h; y += 1) {
+      if (raw[y * (ihdr.w * bpp + 1)] !== 0) { bad.push(`${short}: unsupported filter type`); break; }
+    }
+  }
+  assert(bad.length === 0, bad.slice(0, 4).join('; '));
+  return `${files.length} PNGs decoded`;
+});
+
+check('adaptive icon and its background colour exist', () => {
   for (const rel of [
     'android/app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml',
     'android/app/src/main/res/mipmap-anydpi-v26/ic_launcher_round.xml',
