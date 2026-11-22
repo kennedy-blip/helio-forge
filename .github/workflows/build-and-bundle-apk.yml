@@ -118,14 +118,15 @@ jobs:
       # before Gradle sees the project. `cap update` regenerates the native
       # scaffolding without needing build/ to exist yet.
       - name: Capacitor native scaffold
-        working-directory: android   # settings.gradle resolves ../node_modules
         shell: bash
+        # Must run from the project root: the CLI locates platforms relative to
+        # cwd, and running inside android/ reports "platform has not been added".
         run: |
           set +e
-          # `cap update` reads assets/capacitor.plugins.json, which only `cap
-          # sync` writes, so an empty assets dir makes update die with ENOENT.
-          # `cap sync` tolerates a missing webDir, so seed the tree with it.
-          mkdir -p app/src/main/assets/public
+          # `cap sync` needs webDir to exist and writes assets/capacitor.plugins.json,
+          # which nothing else creates on a clean checkout. A stub build/ satisfies
+          # the copy step; the real build replaces it before the second sync.
+          mkdir -p build android/app/src/main/assets/public
           npx cap sync android 2>&1 | tee /tmp/cap.log
           status=${PIPESTATUS[0]}
           if [ "$status" -ne 0 ]; then
@@ -135,8 +136,8 @@ jobs:
             done
           fi
           # Only fatal if the scaffolding settings.gradle requires is absent.
-          if [ ! -f capacitor-cordova-android-plugins/cordova.variables.gradle ] \
-             || [ ! -f app/capacitor.build.gradle ]; then
+          if [ ! -f android/capacitor-cordova-android-plugins/cordova.variables.gradle ] \
+             || [ ! -f android/app/capacitor.build.gradle ]; then
             echo "::error title=cap sync::native scaffolding still missing"
             exit 1
           fi

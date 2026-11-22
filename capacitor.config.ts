@@ -12,7 +12,6 @@ const config: CapacitorConfig = {
   appId: 'com.helioforge.solar',
   appName: 'HelioForge',
   webDir: 'build',
-  bundledWebRuntime: false,
   android: {
     allowMixedContent: false,
     captureInput: true,
