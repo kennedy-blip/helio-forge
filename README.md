@@ -14,7 +14,7 @@ A polyglot solar-engineering workstation: **Svelte 5** reactive UI, **Python 3.1
 | **Panel Tilt Clinometer** | Compute **Solar Declination δ** and the optimal tilt for *today / fixed / winter / summer*, then hit a ±0.5° haptic lock with a **cosine-incidence η** gauge. Pro tier adds the **NOCT thermal derating lab** (γ = −0.38 %/°C). |
 | **Off-Grid Battery Forge** | **Peukert's law** `t = H·(C/(I·H))^k` autonomy, DoD and inverter losses, a 48-hour **SoC waveform** with the predicted blackout hour, and a **cold-snap V_oc** MPPT string sizer. |
 | **Solar Quote Auditor** | Cross-checks a sales quote against real latitude irradiance, scanned shading and 0.5 %/yr degradation → `FAIR ENGINEERING QUOTE` / `INFLATED PRODUCTION PROMISE` / `PREDATORY $/WATT OVERCHARGE`. |
-| **Site Vault** | IndexedDB (Dexie) persistence with an offline→online sync queue, raw CSV/JSON irradiance export and the **Polyglot Runtime Inspector**. |
+| **Site Vault** | IndexedDB (Dexie) persistence with a real Supabase sync queue (device-scoped RLS), raw CSV/JSON irradiance export and the **Polyglot Runtime Inspector**. |
 
 ---
 
@@ -79,13 +79,59 @@ npm run dev                        # http://localhost:5173
 ```bash
 npm run build       # static bundle into build/
 npm run preview     # serve the production build
-npm run check       # svelte-check
-npm run apk:stub    # regenerate the release placeholder (valid ZIP, no 404s)
+npm run check        # svelte-check
+npm run check:kernel # Python ⇄ JS kernel parity (800 sampled states)
+npm run check:cloud  # vault ⇄ Supabase row-mapping contract
+npm run apk:stub     # regenerate the release placeholder (valid ZIP, no 404s)
 ```
+
+## Cloud sync (Supabase)
+
+The vault is offline-first: IndexedDB is authoritative and the queue drains to
+Supabase whenever the network allows. A queue entry is deleted **only** after a
+2xx response, so a browser closing mid-upload can never lose a survey.
+
+There is no login yet, so each install mints a UUID once and sends it in the
+`x-helio-device` header. Every row's RLS policy pins it to
+`device_id = public.helio_current_device()`, which means:
+
+* the publishable key is safe to ship in the bundle — it grants nothing without
+  a valid device UUID, which never leaves that device;
+* one install can never read, update, or reparent another install's rows;
+* a **secret key must never** appear in client code or `.env` files that are
+  committed. Only `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` are used.
+
+Tables (Supabase project `suaukmetnxjciwmejofj`, `public` schema, `helio_`
+prefix matching this project's existing `mechasonic_*` / `sonostruct_*`
+convention):
+
+| Table | Holds |
+| --- | --- |
+| `helio_devices` | one row per install, keyed by the device UUID |
+| `helio_site_surveys` | saved site surveys, horizon profiles, battery and load state |
+| `helio_quote_audits` | installer quote audits and their findings |
+
+`unique (device_id, client_row_id)` makes every push an idempotent upsert, so a
+replayed queue entry can never duplicate a survey. PostgREST's
+`resolution=merge-duplicates` compiles to `ON CONFLICT DO UPDATE`, which is why
+these tables grant `UPDATE` as well as `INSERT` — a grant set with `INSERT`
+alone fails the upsert with `42501`.
+
+Credentials resolve in order: `VITE_SUPABASE_*` env vars → a runtime override in
+localStorage (`helioforge.cloud.v1`, used by the APK so the same bundle can be
+repointed without a rebuild) → the compiled-in publishable key. With none of
+them, the vault stays local and the status strip reports *unconfigured*.
 
 ## Deploy to Vercel
 
-`vercel.json` pins `api/helio_ephemeris.py` to the `python3.12` runtime with rewrites and immutable asset caching. Push and deploy — the Python function needs **zero** pip packages.
+Project `helio-forge` (`prj_kRShmjbLjMQYMkHtSuJMqy7SudPg`) tracks this repo,
+building with `npm ci && npm run build` and `build/` as the output directory.
+
+`vercel.json` rewrites `/api/helio_ephemeris` → `api/helio_ephemeris.py` with
+immutable asset caching. Do **not** add a `functions.runtime` entry: Vercel
+infers the Python runtime from the `.py` extension and rejects an explicit
+`python3.12` string with `invalid_function_runtime`. The function needs **zero**
+pip packages.
 
 ## Android APK
 
