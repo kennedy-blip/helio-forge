@@ -135,8 +135,9 @@ jobs:
         run: |
           set -uo pipefail
           sed -e 's/\x1b\[[0-9;]*m//g' /tmp/kotlin.log 2>/dev/null \
-            | grep -E '^e: |^w: |error:|FAILURE:|What went wrong|Execution failed' \
-            | head -12 \
+            | grep -vE '^\s*$' \
+            | grep -A3 -E 'What went wrong|^e: |^w: |error:|Execution failed|A problem occurred|Could not' \
+            | head -20 \
             | while IFS= read -r line; do
                 safe=${line//'%'/'%25'}
                 safe=${safe//$'\r'/''}
@@ -178,9 +179,9 @@ jobs:
 
           # Strip ANSI escapes, then pull only the lines that name a cause.
           sed -e 's/\x1b\[[0-9;]*m//g' "$LOG" \
-            | grep -E '^e: |^w: |error:|FAILURE:|What went wrong|Execution failed|^> Task .* FAILED|Caused by|A problem occurred|Could not (resolve|find|compile)|Unresolved reference|missing|not found' \
-            | grep -v '^\s*$' \
-            | head -12 \
+            | grep -vE '^\s*$' \
+            | grep -A3 -E 'What went wrong|^e: |error:|Execution failed|^> Task .* FAILED|Caused by|A problem occurred|Could not (resolve|find|compile)' \
+            | head -20 \
             | while IFS= read -r line; do
                 # Annotations treat these characters as delimiters.
                 safe=${line//'%'/'%25'}
