@@ -115,11 +115,11 @@ const entries = [
 
 const buf = zip(entries);
 
-for (const dir of ['static/releases', 'public/releases']) {
-  const out = resolve(root, dir, 'helioforge-release.apk');
-  mkdirSync(dirname(out), { recursive: true });
-  writeFileSync(out, buf);
-}
+// Single source of truth: static/ is SvelteKit's only asset directory, so the
+// old public/releases duplicate was dead weight that could drift out of sync.
+const out = resolve(root, 'static/releases/helioforge-release.apk');
+mkdirSync(dirname(out), { recursive: true });
+writeFileSync(out, buf);
 
 const sha = createHash('sha256').update(buf).digest('hex');
 const size = statSync(resolve(root, 'static/releases/helioforge-release.apk')).size;

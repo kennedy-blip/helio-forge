@@ -1,10 +1,14 @@
 name: Build & Bundle Android APK
 
+# Builds the signed-but-debug-keyed release APK, commits it into the static
+# deploy bundle, publishes a GitHub Release, and then asks Vercel to redeploy so
+# the one-tap download button serves the real binary.
 on:
   push:
     branches: [main]
     paths-ignore:
       - 'static/releases/**'
+      - 'public/releases/**'
   workflow_dispatch:
 
 concurrency:
@@ -13,6 +17,9 @@ concurrency:
 
 permissions:
   contents: write
+
+env:
+  APK_STEM: helioforge-release
 
 jobs:
   apk:
@@ -23,6 +30,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The bundle commit below pushes back to the same branch.
+          persist-credentials: true
 
       - name: Node 22
         uses: actions/setup-node@v4
@@ -39,6 +49,14 @@ jobs:
       - name: Android SDK
         uses: android-actions/setup-android@v3
 
+      # The repo deliberately does not commit gradle-wrapper.jar: it is a
+      # binary that cannot be checksum-verified from CI, and AGP 8.5.2 already
+      # pins Gradle 8.7. Provision that exact version instead.
+      - name: Gradle 8.7
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+
       - name: Python 3.12 (kernel parity gate)
         uses: actions/setup-python@v5
         with:
@@ -50,50 +68,64 @@ jobs:
       - name: Kernel parity gate (Python ↔ JS, 0.01° tolerance)
         run: node scripts/kernel-parity.mjs
 
+      - name: Cloud sync contract
+        run: node scripts/cloud-contract.mjs
+
+      - name: APK release contract (icons, asset names, tag, one-tap honesty)
+        # Fails fast on the class of bug that costs 6 minutes of Gradle before
+        # :processReleaseResources rejects a missing mipmap.
+        run: node scripts/apk-release.mjs
+
       - name: Build SvelteKit static bundle
         run: npm run build
         env:
           NODE_ENV: production
 
-      - name: Install Capacitor toolchain
-        run: npm install --no-save @capacitor/cli@^6 @capacitor/core@^6 @capacitor/android@^6
-
       - name: Capacitor sync (build/ → android/app/src/main/assets/public)
-        # Sync is additive: the checked-in Kotlin bridge, MainActivity and
-        # AndroidManifest are authoritative and are NOT regenerated.
+        # Sync is additive: the checked-in Kotlin bridge, MainActivity,
+        # AndroidManifest and launcher icons are authoritative.
         run: npx cap sync android
-
-      - name: Grant gradlew execute bit
-        run: chmod +x android/gradlew || true
 
       - name: Gradle assembleRelease
         working-directory: android
-        run: |
-          if [ ! -f gradlew ]; then
-            echo "gradlew missing — generating wrapper"
-            gradle wrapper --gradle-version 8.7
-          fi
-          ./gradlew assembleRelease --no-daemon --stacktrace
+        run: gradle assembleRelease --no-daemon --stacktrace
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx3g'
 
-      - name: Locate & rename artifact
+      - name: Verify artifact is a real installable APK
         id: artifact
+        shell: bash
         run: |
           set -euo pipefail
-          APK=$(find android/app/build/outputs/apk -name '*.apk' | head -n 1)
-          if [ -z "$APK" ]; then echo "no APK produced"; exit 1; fi
-          mkdir -p static/releases public/releases
-          cp "$APK" static/releases/helioforge-release.apk
-          cp "$APK" public/releases/helioforge-release.apk
-          cp "$APK" "static/releases/HelioForge-SolarAR-v1.0.0.apk"
-          SIZE=$(stat -c%s static/releases/helioforge-release.apk)
-          SHA=$(sha256sum static/releases/helioforge-release.apk | cut -d' ' -f1)
+          APK=$(find android/app/build/outputs/apk/release -name '*.apk' | head -n 1)
+          if [ -z "$APK" ]; then echo "::error::Gradle produced no APK"; exit 1; fi
+
+          # An APK is a ZIP: refuse anything that is not, so a truncated or
+          # placeholder artifact can never reach the download button.
+          if ! head -c 2 "$APK" | grep -q 'PK'; then
+            echo "::error::$APK is not a valid ZIP/APK"; exit 1
+          fi
+
+          SIZE=$(stat -c%s "$APK")
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::APK is only $SIZE bytes — refusing to publish"
+            exit 1
+          fi
+
+          mkdir -p static/releases
+          cp "$APK" "static/releases/${APK_STEM}.apk"
+
+          SHA=$(sha256sum "static/releases/${APK_STEM}.apk" | cut -d' ' -f1)
           echo "size=$SIZE" >> "$GITHUB_OUTPUT"
-          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "### HelioForge APK" >> "$GITHUB_STEP_SUMMARY"
-          echo "- size: $SIZE bytes" >> "$GITHUB_STEP_SUMMARY"
-          echo "- sha256: \`$SHA\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "sha=$SHA"  >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### HelioForge APK"
+            echo ""
+            echo "- source: \`$APK\`"
+            echo "- size: $SIZE bytes"
+            echo "- sha256: \`$SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload APK workflow artifact
         uses: actions/upload-artifact@v4
@@ -103,21 +135,47 @@ jobs:
           retention-days: 90
 
       - name: Commit APK into the deploy bundle
+        id: commit
+        shell: bash
         run: |
+          set -euo pipefail
           git config user.name  "helioforge-ci"
           git config user.email "ci@helioforge.app"
-          git add -f static/releases/*.apk public/releases/*.apk
-          git commit -m "ci: bundle HelioForge v1.0.0-arm64 APK (${{ steps.artifact.outputs.size }} bytes)" || echo "nothing to commit"
+          # Drops the legacy public/releases copy if an older run created one.
+          git rm -r --ignore-unmatch --cached public/releases >/dev/null 2>&1 || true
+          git add -f "static/releases/${APK_STEM}.apk"
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git commit -m "ci: bundle HelioForge v1.0.0-arm64 APK (${{ steps.artifact.outputs.size }} bytes)"
           git push
+          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-arm64-${{ github.run_number }}
-          name: HelioForge v1.0.0-arm64 (build ${{ github.run_number }})
+          # Must match APK_NAME in src/lib/components/modals/ApkModal.svelte.
+          tag_name: HelioForge-SolarAR-v1.0.0
+          name: HelioForge SolarAR v1.0.0 (arm64-v8a · armeabi-v7a)
           body: |
             **HelioForge** — Optical AR Solar Heliodon × Off-Grid Battery Forge
             Stack: Svelte 5 · Python 3.12 · GLSL ES 3.00 · Kotlin
-            SHA-256: `${{ steps.artifact.outputs.sha }}`
+
+            - Package: `com.helioforge.solar`
+            - Min Android: API 24 (7.0), target 34
+            - SHA-256: `${{ steps.artifact.outputs.sha }}`
+
+            This release is signed with the CI debug keystore, so it installs
+            via sideload but is not Play Store distributable.
           files: static/releases/helioforge-release.apk
-          fail_on_unmatched_files: false
+          fail_on_unmatched_files: true
+
+      - name: Redeploy Vercel so one-tap download serves the new APK
+        if: steps.commit.outputs.changed == 'true' && env.VERCEL_DEPLOY_HOOK != ''
+        shell: bash
+        env:
+          VERCEL_DEPLOY_HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          curl --fail --silent --show-error -X POST "$VERCEL_DEPLOY_HOOK"

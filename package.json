@@ -2,7 +2,7 @@
   "name": "helio-forge",
   "version": "1.0.0",
   "private": true,
-  "description": "HELIO-FORGE — Optical AR Solar-Path Heliodon, Horizon Shade Scanner, Photovoltaic Tilt Optimizer & Off-Grid Battery Autonomy Architect",
+  "description": "HELIO-FORGE \u2014 Optical AR Solar-Path Heliodon, Horizon Shade Scanner, Photovoltaic Tilt Optimizer & Off-Grid Battery Autonomy Architect",
   "type": "module",
   "scripts": {
     "dev": "vite dev --host 0.0.0.0 --port 5173",
@@ -11,7 +11,9 @@
     "apk:stub": "node scripts/make-apk-stub.mjs",
     "check": "svelte-check --tsconfig ./jsconfig.json",
     "check:cloud": "node scripts/cloud-contract.mjs",
-    "check:kernel": "node scripts/kernel-parity.mjs"
+    "check:kernel": "node scripts/kernel-parity.mjs",
+    "check:apk": "node scripts/apk-release.mjs",
+    "icons:android": "python3 scripts/make-android-icons.py"
   },
   "devDependencies": {
     "@sveltejs/adapter-static": "^3.0.10",

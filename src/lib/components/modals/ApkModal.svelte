@@ -1,73 +1,74 @@
 <script>
   import QrCode from '$lib/components/QrCode.svelte';
-  import { app, closeModal, toast } from '$lib/state/app.svelte.js';
-
-  const APK_PATH = '/releases/helioforge-release.apk';
-  const APK_NAME = 'HelioForge-SolarAR-v1.0.0.apk';
-  const SHA256 = 'f3a91c7d0e2b48a5c1d6e9f074b23c8a5d1e6f90b2c4a7d8e5f0132c4b6a9d7e';
+  import { closeModal, toast } from '$lib/state/app.svelte.js';
+  import {
+    APK_FILE_NAME,
+    APK_GITHUB_URL,
+    APK_RELEASE_PAGE,
+    UNKNOWN_RELEASE,
+    downloadRelease,
+    formatBytes,
+    resolveRelease
+  } from '$lib/apk/release.js';
 
   let downloading = $state(false);
   let done = $state(false);
-  /** 'checking' | 'ready' | 'placeholder' | 'absent' */
-  let artifact = $state('checking');
-  let artifactBytes = $state(0);
+  /** @type {import('$lib/apk/release.js').ReleaseInfo} */
+  let release = $state(UNKNOWN_RELEASE);
 
-  // Verify the release artifact actually exists next to the app.
   $effect(() => {
     (async () => {
-      try {
-        const head = await fetch(APK_PATH, { method: 'HEAD' });
-        const len = Number(head.headers.get('content-length') ?? 0);
-        artifactBytes = len;
-        if (!head.ok) artifact = 'absent';
-        else if (len > 2_000_000) artifact = 'ready';
-        else artifact = 'placeholder';
-      } catch {
-        artifact = 'absent';
-      }
+      release = await resolveRelease();
     })();
   });
 
   const origin = $derived(typeof window !== 'undefined' ? window.location.origin : '');
-  const installUrl = $derived(`${origin}${APK_PATH}`);
+  /** QR target: the artifact itself when ready, else the release page. */
+  const installUrl = $derived(
+    release.state === 'ready' && release.url ? release.url : origin ? `${origin}/releases/helioforge-release.apk` : APK_GITHUB_URL
+  );
 
   async function download() {
     downloading = true;
     try {
-      // Probe the pre-bundled artifact first (guaranteed zero 404s).
-      const head = await fetch(APK_PATH, { method: 'HEAD' }).catch(() => null);
-      const ok = head?.ok && Number(head.headers.get('content-length') ?? 0) > 2048;
-      if (ok) {
-        const a = document.createElement('a');
-        a.href = APK_PATH;
-        a.download = APK_NAME;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
+      const info = await downloadRelease();
+      release = info;
+      if (info.state === 'ready') {
         done = true;
-        toast('APK download started', 'success');
+        toast(
+          info.source === 'bundle'
+            ? `APK download started · ${formatBytes(info.bytes)}`
+            : `APK served from the GitHub Release · ${formatBytes(info.bytes)}`,
+          'success'
+        );
       } else {
-        // Fallback: stream the client-side package descriptor so the tap
-        // always produces a real file instead of a dead link.
-        await fallbackStream();
-        toast('Signed build manifest streamed — CI artifact pending', 'warn');
+        await streamManifest(info);
+        toast('No signed APK published yet — build manifest streamed instead', 'warn');
       }
     } catch {
-      await fallbackStream();
+      await streamManifest(release);
     } finally {
       downloading = false;
     }
   }
 
-  async function fallbackStream() {
+  /**
+   * Fallback: a manifest that is *accurate* — it carries the probe result and
+   * the exact build command, rather than pretending to be a package.
+   */
+  async function streamManifest(info) {
     const body = JSON.stringify(
       {
         package: 'com.helioforge.solar',
-        version: '1.0.0-arm64',
-        webDir: 'build',
-        stack: ['Svelte 5', 'Python 3.12', 'GLSL ES 3.00', 'Kotlin 1.9'],
-        installUrl,
-        note: 'Binary is produced by .github/workflows/build-and-bundle-apk.yml and committed to static/releases/.',
+        version: '1.0.0',
+        artifactState: info?.state ?? 'unknown',
+        artifactBytes: info?.bytes ?? 0,
+        artifactSource: info?.source ?? 'none',
+        releaseUrl: APK_RELEASE_PAGE,
+        expectedAssetName: APK_FILE_NAME,
+        buildCommand: 'gh workflow run "Build & Bundle Android APK" --ref main',
+        workflow: '.github/workflows/build-and-bundle-apk.yml',
+        note: 'No installable .apk is published yet. Run the workflow; it commits the APK into static/releases/ and redeploys Vercel.',
         generatedAt: new Date().toISOString()
       },
       null,
@@ -85,16 +86,20 @@
     done = true;
   }
 
-  const specs = [
+  const sizeLabel = $derived(
+    release.state === 'ready' ? formatBytes(release.bytes) : release.bytes ? `${formatBytes(release.bytes)} (placeholder)` : 'pending CI'
+  );
+
+  const specs = $derived([
     ['Version', 'v1.0.0-arm64'],
     ['Runtime', 'Svelte 5 + Python + GLSL + Kotlin Bridge'],
     ['Off-grid', '100% Off-Grid Ready'],
     ['Min Android', 'API 24 (7.0) · target 34'],
     ['Architectures', 'arm64-v8a · armeabi-v7a'],
-    ['Size', '≈ 9.4 MB'],
+    ['Size', sizeLabel],
     ['WebDir', 'build/ (adapter-static)'],
     ['Package', 'com.helioforge.solar']
-  ];
+  ]);
 
   const steps = [
     ['Download', 'Tap the button or scan the QR code with your phone.'],
@@ -142,7 +147,13 @@
 
       <div class="checksum">
         <span class="stat-label">SHA-256 checksum</span>
-        <code class="mono tiny-text">{SHA256}</code>
+        {#if release.sha256}
+          <code class="mono tiny-text">{release.sha256}</code>
+        {:else if release.state === 'ready'}
+          <code class="mono tiny-text faint">published in the GitHub Release notes</code>
+        {:else}
+          <code class="mono tiny-text faint">none — no installable build has been published yet</code>
+        {/if}
       </div>
 
       <ol class="steps">
@@ -177,12 +188,15 @@
   </div>
 
   <footer class="apk-foot">
-    {#if artifact === 'ready'}
-      <span class="chip ok"><span class="dot pulse"></span> signed APK ready · {(artifactBytes / 1_048_576).toFixed(1)} MB</span>
-    {:else if artifact === 'placeholder'}
-      <span class="chip warn"><span class="dot"></span> placeholder bundle · {(artifactBytes / 1024).toFixed(1)} KB</span>
-    {:else if artifact === 'absent'}
-      <span class="chip warn"><span class="dot"></span> streaming manifest fallback</span>
+    {#if release.state === 'ready'}
+      <span class="chip ok">
+        <span class="dot pulse"></span>
+        installable APK · {formatBytes(release.bytes)} · {release.source === 'github' ? 'GitHub Release' : release.source}
+      </span>
+    {:else if release.state === 'placeholder'}
+      <span class="chip warn"><span class="dot"></span> placeholder bundle · {formatBytes(release.bytes)} — CI has not published yet</span>
+    {:else if release.state === 'absent'}
+      <span class="chip warn"><span class="dot"></span> no APK published</span>
     {:else}
       <span class="chip"><span class="dot"></span> verifying release artifact…</span>
     {/if}
