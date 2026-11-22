@@ -46,8 +46,45 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Android SDK (preinstalled on ubuntu-latest)
+        # Deliberately not android-actions/setup-android: it is a node16-era
+        # action and failed here within 21 s. The runner image already ships
+        # ANDROID_HOME with cmdline-tools and platform-tools, which is all AGP
+        # needs; install platform 34 only if the image predates it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ ! -d "$SDK" ]; then
+            echo "::error::no Android SDK at $SDK (ANDROID_HOME unset)"
+            exit 1
+          fi
+          echo "ANDROID_HOME=$SDK"     >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
+
+          SDKMGR=""
+          for candidate in "$SDK/cmdline-tools/latest/bin/sdkmanager" "$SDK/cmdline-tools/bin/sdkmanager"; do
+            [ -x "$candidate" ] && SDKMGR="$candidate" && break
+          done
+          if [ -z "$SDKMGR" ]; then
+            echo "::error::sdkmanager not found under $SDK/cmdline-tools"
+            exit 1
+          fi
+          echo "$(dirname "$SDKMGR")" >> "$GITHUB_PATH"
+          echo "$SDK/platform-tools"   >> "$GITHUB_PATH"
+
+          echo "--- already present ---"
+          ls "$SDK/platforms" 2>/dev/null || true
+
+          # compileSdk 34 is required by android/build.gradle.
+          if [ ! -d "$SDK/platforms/android-34" ]; then
+            echo "--- installing platform 34 + build-tools 34.0.0 ---"
+            yes | "$SDKMGR" --licenses >/dev/null 2>&1 || true
+            "$SDKMGR" --install "platforms;android-34" "build-tools;34.0.0"
+          else
+            echo "platform 34 present"
+          fi
+          "$SDKMGR" --list_installed 2>/dev/null | head -20 || true
 
       # The repo deliberately does not commit gradle-wrapper.jar: it is a
       # binary that cannot be checksum-verified from CI, and AGP 8.5.2 already
