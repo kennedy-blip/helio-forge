@@ -105,18 +105,33 @@ function uuidv4() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/**
+ * Memoised fallback for environments without writable localStorage (SSR,
+ * prerender, a locked-down WebView). Without this, every call would mint a new
+ * identity and each row would be written under a different device — so the
+ * vault would never be able to read its own data back.
+ */
+let cachedDevice = '';
+
 /** Stable per-install device id — the RLS bearer token. */
 export function deviceId() {
-  if (typeof localStorage === 'undefined') return uuidv4();
-  try {
-    const existing = localStorage.getItem(DEVICE_KEY);
-    if (existing) return existing;
-    const fresh = uuidv4();
-    localStorage.setItem(DEVICE_KEY, fresh);
-    return fresh;
-  } catch {
-    return uuidv4();
+  if (cachedDevice) return cachedDevice;
+  if (typeof localStorage !== 'undefined') {
+    try {
+      const existing = localStorage.getItem(DEVICE_KEY);
+      if (existing) {
+        cachedDevice = existing;
+        return cachedDevice;
+      }
+      cachedDevice = uuidv4();
+      localStorage.setItem(DEVICE_KEY, cachedDevice);
+      return cachedDevice;
+    } catch {
+      /* fall through to the in-memory cache */
+    }
   }
+  if (!cachedDevice) cachedDevice = uuidv4();
+  return cachedDevice;
 }
 
 export function shortDeviceId() {
