@@ -124,10 +124,46 @@ jobs:
         run: npx cap sync android
 
       - name: Gradle assembleRelease
+        id: gradle
         working-directory: android
-        run: gradle assembleRelease --no-daemon --stacktrace
+        shell: bash
+        run: |
+          set +e
+          gradle assembleRelease --no-daemon --stacktrace --console=plain 2>&1 | tee /tmp/gradle.log
+          exit ${PIPESTATUS[0]}
         env:
           GRADLE_OPTS: '-Dorg.gradle.jvmargs=-Xmx3g'
+
+      - name: Surface Gradle failure as annotations
+        # The build log is served from blob storage, which is not reachable from
+        # every environment. Re-emit the actionable lines as check annotations so
+        # a failure is diagnosable from the PR page alone.
+        if: failure() && steps.gradle.outcome == 'failure'
+        shell: bash
+        run: |
+          set -uo pipefail
+          LOG=/tmp/gradle.log
+          if [ ! -s "$LOG" ]; then echo "no gradle log captured"; exit 1; fi
+
+          # Strip ANSI escapes, then pull only the lines that name a cause.
+          sed -e 's/\x1b\[[0-9;]*m//g' "$LOG" \
+            | grep -E '^e: |^w: |error:|FAILURE:|What went wrong|Execution failed|^> Task .* FAILED|Caused by|A problem occurred|Could not (resolve|find|compile)|Unresolved reference|missing|not found' \
+            | grep -v '^\s*$' \
+            | head -12 \
+            | while IFS= read -r line; do
+                # Annotations treat these characters as delimiters.
+                safe=${line//'%'/'%25'}
+                safe=${safe//$'\r'/''}
+                echo "::error title=Gradle::${safe}"
+              done
+
+          {
+            echo '### Gradle failure'
+            echo '```'
+            sed -e 's/\x1b\[[0-9;]*m//g' "$LOG" | tail -70
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Verify artifact is a real installable APK
         id: artifact
