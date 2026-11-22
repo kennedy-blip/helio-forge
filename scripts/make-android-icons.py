@@ -105,20 +105,29 @@ def render(size: int, *, adaptive: bool) -> bytes:
 
 
 def write_png(path: Path, size: int, raw: bytes, *, opaque: bool) -> None:
-    """Encode RGBA rows (or RGB when opaque) into a PNG file."""
-    if opaque:
-        # Strip the alpha channel for the adaptive foreground (Android wants a
-        # transparent PNG there, so opaque=True is only used for legacy icons).
-        rows = bytearray()
-        stride = size * 4
-        for y in range(size):
-            rows.append(0)
+    """
+    Encode packed RGBA pixels into a PNG file.
+
+    `opaque=True` drops the alpha channel (legacy launcher icons, colour type 2).
+    `opaque=False` keeps it for adaptively-masked foregrounds (colour type 6).
+
+    Both branches must emit exactly one filter byte per scanline — PNG requires
+    it, and omitting it produces a file that looks fine to a lenient viewer but
+    that AAPT2 rejects with "AAPT2 process unexpectedly exit".
+    """
+    stride = size * 4
+    rows = bytearray()
+    for y in range(size):
+        rows.append(0)  # PNG filter type 0 (None) for this scanline
+        base = y * stride
+        if opaque:
             for x in range(size):
-                o = y * stride + x * 4
+                o = base + x * 4
                 rows += raw[o : o + 3]
-        color_type, body = 2, bytes(rows)
-    else:
-        color_type, body = 6, raw
+        else:
+            rows += raw[base : base + stride]
+    color_type = 2 if opaque else 6
+    body = bytes(rows)
 
     def chunk(tag: bytes, data: bytes) -> bytes:
         return (
@@ -136,11 +145,19 @@ def write_png(path: Path, size: int, raw: bytes, *, opaque: bool) -> None:
     path.write_bytes(png)
 
 
+def validate(raw: bytes, size: int) -> None:
+    """Fail loudly if render() ever emits the wrong number of pixels."""
+    expected = size * size * 4
+    if len(raw) != expected:
+        raise SystemExit(f"render({size}) produced {len(raw)} bytes, expected {expected}")
+
+
 def main() -> None:
     written = []
 
     for bucket, size in LEGACY_SIZES.items():
         raw = render(size, adaptive=False)
+        validate(raw, size)
         for name in ("ic_launcher.png", "ic_launcher_round.png"):
             p = RES / f"mipmap-{bucket}" / name
             write_png(p, size, raw, opaque=True)
@@ -149,6 +166,7 @@ def main() -> None:
     for bucket, size in ADAPTIVE_SIZES.items():
         # Foreground needs alpha so the launcher can mask it.
         raw = render(size, adaptive=True)
+        validate(raw, size)
         p = RES / f"mipmap-{bucket}" / "ic_launcher_foreground.png"
         write_png(p, size, raw, opaque=False)
         written.append(p)
