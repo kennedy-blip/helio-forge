@@ -5,7 +5,6 @@
   "outputDirectory": "build",
   "functions": {
     "api/helio_ephemeris.py": {
-      "runtime": "python3.12",
       "maxDuration": 30,
       "memory": 1024
     }
