@@ -210,8 +210,18 @@ class HelioSensorPlugin : Plugin(), SensorEventListener {
      */
     @PluginMethod
     fun hapticLock(call: PluginCall) {
-        val pattern = call.getArray("pattern")?.toList()?.mapNotNull { (it as? Number)?.toLong() }?.toLongArray()
-            ?: longArrayOf(18, 50, 18)
+        // call.getArray() is an org.json JSONArray (Capacitor's JSArray), not a
+        // Kotlin List, so it has no toList(). Walk the indices instead: each
+        // element arrives as a Double from JavaScript.
+        val pattern = call.getArray("pattern")?.let { arr ->
+            val out = LongArray(arr.length())
+            var n = 0
+            for (i in 0 until arr.length()) {
+                val ms = arr.optDouble(i, Double.NaN)
+                if (!ms.isNaN() && ms > 0) out[n++] = ms.toLong()
+            }
+            if (n == 0) null else out.copyOf(n)
+        } ?: longArrayOf(18, 50, 18)
         vibrate(pattern)
         call.resolve(JSObject().apply { put("vibrated", true) })
     }
