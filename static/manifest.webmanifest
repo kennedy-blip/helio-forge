@@ -1,0 +1,15 @@
+{
+  "name": "HELIO-FORGE · Solar Heliodon",
+  "short_name": "HelioForge",
+  "description": "Optical AR solar-path heliodon, horizon shade scanner, PV tilt optimizer and off-grid battery autonomy architect.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#070a12",
+  "theme_color": "#070a12",
+  "categories": ["utilities", "productivity", "weather"],
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

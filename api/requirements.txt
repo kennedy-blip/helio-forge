@@ -1,0 +1,8 @@
+# HELIO-FORGE · Vercel Python 3.12 runtime
+#
+# The ephemeris kernel is intentionally dependency-free (Python standard library
+# only), so there is nothing to install. Keeping this file present tells the
+# Vercel Python builder to treat `api/` as a Python 3.12 function directory.
+# If you later add numpy-grade transformations, pin them here:
+#
+# numpy==2.1.3
