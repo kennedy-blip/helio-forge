@@ -113,18 +113,22 @@ jobs:
         # :processReleaseResources rejects a missing mipmap.
         run: node scripts/apk-release.mjs
 
-      # Compiling Kotlin is the slowest failure mode to discover; do it against
-      # an empty asset payload first so a type error surfaces in ~30 s instead of
-      # after a full web build. ICONS/resources/manifest are all in the repo.
+      # capacitor-cordova-android-plugins/ and app/capacitor.build.gradle are
+      # gitignored build outputs that settings.gradle requires, so generate them
+      # before Gradle sees the project. `cap update` regenerates the native
+      # scaffolding without needing build/ to exist yet.
+      - name: Capacitor native scaffold
+        run: npx cap update android
+
+      # Compiling Kotlin is the slowest failure mode to discover; do it here,
+      # before the web build, so a type error surfaces in ~30 s rather than after
+      # a full SvelteKit build. Icons, resources and the manifest are in-repo.
       - name: Kotlin compile gate (fail fast)
         id: kotlin
         working-directory: android
         shell: bash
         run: |
           mkdir -p app/src/main/assets/public
-          [ -f app/src/main/assets/capacitor.config.json ] || \
-            printf '{"appId":"com.helioforge.solar","appName":"HelioForge","webDir":"build"}' \
-            > app/src/main/assets/capacitor.config.json
           set +e
           gradle :app:compileReleaseKotlin --no-daemon --console=plain 2>&1 | tee /tmp/kotlin.log
           exit ${PIPESTATUS[0]}
